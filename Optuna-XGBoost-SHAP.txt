@@ -1,0 +1,135 @@
+import pandas as pd
+from xgboost.sklearn import XGBClassifier
+import numpy as np
+import matplotlib.pyplot as plt
+import shap
+import seaborn as sns
+import optuna
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn import preprocessing
+from sklearn.feature_selection import RFE
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import r2_score 
+from sklearn.feature_selection import RFECV
+from sklearn.metrics import mean_absolute_error #MAE
+from sklearn import tree
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.metrics import accuracy_score
+import time
+
+# 开始计时
+start_time = time.time()
+
+plt.rcParams['font.family'] = ['SimSun', 'Times New Roman'] # 设置字体族，中文为SimSun，英文为Times New Roman
+plt.rcParams['axes.unicode_minus'] = False    #显示负号
+df = pd.read_csv('./data 108.csv', delimiter=",")
+y = df['stability status']
+X = df.drop('stability status', axis = 1)
+def objective(trial):
+    params = {
+        'n_estimators': trial.suggest_int('n_estimators', 100, 2000),
+        'learning_rate': trial.suggest_float ('learning_rate', 0.01, 1.0),
+        'max_depth': trial.suggest_int('max_depth', 1, 10),
+        'gamma': trial.suggest_float('gamma', 0.01, 1.0),
+    }
+# 使用 5 折交叉验证
+    cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    scores = []
+
+    for train_idx, valid_idx in cv.split(X, y):
+        X_train, X_valid = X.iloc[train_idx], X.iloc[valid_idx]
+        y_train, y_valid = y.iloc[train_idx], y.iloc[valid_idx]
+
+        model = XGBClassifier(**params)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_valid)
+        accuracy = accuracy_score(y_valid, y_pred)
+        scores.append(accuracy)
+# 输出每次交叉验证的准确率
+        print(f"Accuracy for this fold: {accuracy}")
+
+    # 返回交叉验证的平均准确率
+    return sum(scores) / len(scores)
+
+# 创建Optuna的研究对象
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+# Extract the best parameters and fitness value
+best_params = study.best_params
+#定义分割
+X_train, X_valid, y_train, y_valid = train_test_split(X, y, test_size=0.1,random_state=2)
+#读取预测集
+df1 = pd.read_csv('./data22.csv', delimiter=",")
+yp2 = df1['stability status']
+Xp2 = df1.drop('stability status', axis = 1)
+# 创建最终的XGBoost模型对象并训练
+final_model = XGBClassifier(**best_params)
+final_model.fit(X_train, y_train)
+predictions = final_model.predict(X_valid)
+predictions2 = final_model.predict(Xp2)
+probabilities = final_model.predict_proba(Xp2)
+# 输出最佳超参数
+print('Best trial:')
+trial = study.best_trial
+print('  Value: {}'.format(trial.value))
+print('  Params: ')
+for key, value in trial.params.items():
+    print('    {}: {}'.format(key, value))
+    
+    
+print(' predictions2 ')
+
+# 结束计时
+import joblib
+# 保存最佳估计器  
+#joblib.dump(grid_search.best_estimator_, 'best_estimator.pkl')
+# 加载最佳估计器  
+#best_estimator = joblib.load('best_estimator.pkl')
+explainer = shap.Explainer(final_model)
+shap_values = explainer(X_train)
+fig = plt.figure(dpi = 600)
+shap.summary_plot(shap_values, X_train, color_bar=True, color_bar_label="Feature value",plot_size=(6.6666,5),show=False)
+plt.xlabel('SHAP value（impact on model output）',fontsize=14)
+plt.savefig('s1.png')
+plt.show()
+fig = plt.figure(dpi = 600)
+# 取每个特征的SHAP值的绝对值的平均值作为该特征的重要性
+shap.summary_plot(shap_values, X_train, plot_type="bar",plot_size=(6.66666,5),show=False)
+plt.xlabel('SHAP feature importance',fontsize=14)
+plt.savefig('s2.png')
+plt.show()
+fig = plt.figure(dpi = 600)
+#单样本解释图
+shap.plots.waterfall(shap_values[0], show=False)
+plt.savefig('s3.png')
+fig = plt.figure(dpi = 600)
+# 第0个样本的解释：以力图形式可视化
+shap.plots.force(shap_values[0])
+# 所有样本的解释：以力图形式可视化
+shap.force_plot(explainer.expected_value, shap_values.values, X, show=False )
+shap_values = explainer.shap_values(X_train)
+c = pd.DataFrame(shap_values, columns = X_train.columns)
+plt.savefig('s6.png')
+plt.show()
+#SHAP依赖图
+import matplotlib.pyplot as plt  
+plt.rcParams['font.family'] = ['SimSun', 'Times New Roman']  
+plt.rcParams['axes.unicode_minus'] = False  
+fig = plt.figure(figsize=(15, 9), dpi=600)    
+m = 0  
+for i in X.columns:  
+    ax = plt.subplot(2, 3, m+1)  
+    shap.dependence_plot(i, shap_values, X_train, interaction_index=None, show=False, ax=ax)    
+    ax.axhline(y=0, linestyle='--', color='black') # 添加y=0的虚线
+    plt.ylabel('SHAP value')
+    plt.rcParams['axes.linewidth'] = 0.75
+    m += 1 
+plt.savefig('s4.png')
+plt.show()
+fig = plt.figure(dpi = 600)
+end_time = time.time()
+# 计算时间差
+execution_time = end_time - start_time
+# 打印执行时间
+print("代码执行时间：", execution_time, "秒")

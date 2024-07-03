@@ -1,0 +1,124 @@
+from sklearn.model_selection import cross_val_score, KFold
+import pandas as pd
+from xgboost.sklearn import XGBClassifier
+import numpy as np
+import matplotlib.pyplot as plt
+import shap
+import seaborn as sns
+import optuna
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn import preprocessing
+from sklearn.feature_selection import RFE
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import r2_score 
+from sklearn.feature_selection import RFECV
+from sklearn.metrics import mean_absolute_error #MAE
+from sklearn import tree
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.metrics import accuracy_score
+plt.rcParams['font.family'] = ['SimSun', 'Times New Roman'] # 设置字体族，中文为SimSun，英文为Times New Roman
+plt.rcParams['axes.unicode_minus'] = False    #显示负号
+import time
+
+# 开始计时
+start_time = time.time()
+#数据读取
+df = pd.read_csv('./data 108.csv', delimiter=",")
+y = df['stability status']
+X = df.drop('stability status', axis = 1)
+# 将数据按照8:2比例分割为训练集和测试集
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2,random_state=42)
+# 定义XGBoost模型
+def xgboost_model(params):
+    n_estimators = int(params[0])
+    learning_rate = params[1]
+    max_depth = int(params[2])
+    gamma = params[3]
+
+    model = XGBClassifier(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth, gamma=gamma, use_label_encoder=False, eval_metric='logloss')
+    return model
+
+# 定义目标函数
+def objective_function(params):
+    model = xgboost_model(params)
+    kfold = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    results = cross_val_score(model, X_train, y_train, cv=kfold, scoring='accuracy')
+    return -results.mean()
+
+# PSO参数
+n_particles = 30
+n_iterations = 50
+lb = [100, 0.01, 1, 0.01]
+ub = [2000, 1, 10, 1]
+w = 0.5  # 惯性权重
+c1 = 1.5  # 个体学习因子
+c2 = 1.5  # 社会学习因子
+
+# 初始化粒子位置和速度
+positions = np.random.rand(n_particles, len(lb)) * (np.array(ub) - np.array(lb)) + np.array(lb)
+velocities = np.random.rand(n_particles, len(lb)) * 0.1 * (np.array(ub) - np.array(lb))
+personal_best_positions = positions.copy()
+personal_best_scores = np.array([objective_function(pos) for pos in positions])
+global_best_position = personal_best_positions[np.argmin(personal_best_scores)]
+global_best_score = np.min(personal_best_scores)
+
+# PSO算法
+for t in range(n_iterations):
+    for i in range(n_particles):
+        r1 = np.random.rand(len(lb))
+        r2 = np.random.rand(len(lb))
+        velocities[i] = (w * velocities[i] +
+                         c1 * r1 * (personal_best_positions[i] - positions[i]) +
+                         c2 * r2 * (global_best_position - positions[i]))
+        positions[i] = positions[i] + velocities[i]
+        positions[i] = np.clip(positions[i], lb, ub)
+
+        score = objective_function(positions[i])
+        if score < personal_best_scores[i]:
+            personal_best_scores[i] = score
+            personal_best_positions[i] = positions[i]
+
+    global_best_position = personal_best_positions[np.argmin(personal_best_scores)]
+    global_best_score = np.min(personal_best_scores)
+
+# 打印最佳参数
+best_params = {
+    'n_estimators': int(global_best_position[0]),
+    'learning_rate': global_best_position[1],
+    'max_depth': int(global_best_position[2]),
+    'gamma': global_best_position[3]
+}
+print("最佳参数:", best_params)
+
+# 使用最佳参数建立模型
+best_model = xgboost_model(global_best_position)
+best_model.fit(X_train, y_train)
+
+#读取预测集
+df1 = pd.read_csv('./data22.csv', delimiter=",")
+yp2 = df1['stability status']
+Xp2 = df1.drop('stability status', axis = 1)
+
+# 创建最终的XGBoost模型对象并训练
+best_model = xgboost_model(global_best_position)
+best_model.fit(X_train, y_train)
+predictions2 = best_model.predict(Xp2)
+probabilities = best_model.predict_proba(Xp2)
+
+# 打印每折的准确率
+kfold = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+results = cross_val_score(best_model, X_train, y_train, cv=kfold, scoring='accuracy')
+print("每折的准确率:", results)
+print("平均准确率:", results.mean())
+
+# 在测试集上评估模型
+test_accuracy = best_model.score(X_test, y_test)
+print("测试集准确率:", test_accuracy)
+
+# 结束计时
+end_time = time.time()
+# 计算时间差
+execution_time = end_time - start_time
+# 打印执行时间
+print("代码执行时间：", execution_time, "秒")

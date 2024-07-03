@@ -1,0 +1,140 @@
+from sklearn.model_selection import cross_val_score, KFold
+import pandas as pd
+from xgboost.sklearn import XGBClassifier
+import numpy as np
+import matplotlib.pyplot as plt
+import shap
+import seaborn as sns
+import optuna
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn import preprocessing
+from sklearn.feature_selection import RFE
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import r2_score 
+from sklearn.feature_selection import RFECV
+from sklearn.metrics import mean_absolute_error #MAE
+from sklearn import tree
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.metrics import accuracy_score
+import time
+
+# 开始计时
+start_time = time.time()
+plt.rcParams['font.family'] = ['SimSun', 'Times New Roman'] # 设置字体族，中文为SimSun，英文为Times New Roman
+plt.rcParams['axes.unicode_minus'] = False    #显示负号
+#数据读取
+df = pd.read_csv('./data 108.csv', delimiter=",")
+y = df['stability status']
+X = df.drop('stability status', axis = 1)
+
+# 将数据按照8:2比例分割为训练集和测试集
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2,random_state=42)
+# 定义XGBoost模型
+def xgboost_model(params):
+    n_estimators = int(params[0])
+    learning_rate = params[1]
+    max_depth = int(params[2])
+    gamma = params[3]
+
+    model = XGBClassifier(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth, gamma=gamma, use_label_encoder=False, eval_metric='logloss')
+    return model
+
+# 定义目标函数
+def objective_function(params):
+    model = xgboost_model(params)
+    kfold = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    results = cross_val_score(model, X_train, y_train, cv=kfold, scoring='accuracy')
+    return -results.mean()
+
+# WOA参数
+n_agents = 30
+n_iterations = 50
+lb = [100, 0.01, 1, 0.01]
+ub = [2000, 1, 10, 1]
+
+# 初始化鲸鱼位置
+positions = np.random.rand(n_agents, len(lb)) * (np.array(ub) - np.array(lb)) + np.array(lb)
+best_position = positions[0]
+best_score = objective_function(best_position)
+
+# WOA算法
+for t in range(n_iterations):
+    a = 2 - t * (2 / n_iterations)
+    a2 = -1 + t * ((-1) / n_iterations)
+
+    for i in range(n_agents):
+        r1 = np.random.rand()
+        r2 = np.random.rand()
+        A = 2 * a * r1 - a
+        C = 2 * r2
+
+        b = 1
+        l = (a2 - 1) * np.random.rand() + 1
+        p = np.random.rand()
+
+        if p < 0.5:
+            if abs(A) < 1:
+                D = abs(C * best_position - positions[i])
+                positions[i] = best_position - A * D
+            else:
+                random_agent_index = np.random.randint(n_agents)
+                random_agent = positions[random_agent_index]
+                D = abs(C * random_agent - positions[i])
+                positions[i] = random_agent - A * D
+        else:
+            distance_to_leader = abs(best_position - positions[i])
+            positions[i] = distance_to_leader * np.exp(b * l) * np.cos(l * 2 * np.pi) + best_position
+
+        # 修正位置
+        positions[i] = np.clip(positions[i], lb, ub)
+
+        # 计算新的目标函数值
+        score = objective_function(positions[i])
+        if score < best_score:
+            best_score = score
+            best_position = positions[i]
+
+# 打印最佳参数
+print("最佳参数:", best_position)
+
+# 使用最佳参数建立模型
+best_model = xgboost_model(best_position)
+best_model.fit(X_train, y_train)
+
+#读取预测集
+df1 = pd.read_csv('./data22.csv', delimiter=",")
+yp2 = df1['stability status']
+Xp2 = df1.drop('stability status', axis = 1)
+
+# 创建最终的XGBoost模型对象并训练
+best_model = xgboost_model(best_position)
+best_model.fit(X_train, y_train)
+predictions2 = best_model.predict(Xp2)
+probabilities = best_model.predict_proba(Xp2)
+
+# 打印每折的准确率
+kfold = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+results = cross_val_score(best_model, X_train, y_train, cv=kfold, scoring='accuracy')
+print("每折的准确率:", results)
+print("平均准确率:", results.mean())
+
+# 在测试集上评估模型
+test_accuracy = best_model.score(X_test, y_test)
+print("测试集准确率:", test_accuracy)
+
+# 打印最佳参数
+best_params = {
+    'n_estimators': int(best_position[0]),
+    'learning_rate': best_position[1],
+    'max_depth': int(best_position[2]),
+    'gamma': best_position[3]
+}
+print("最佳参数2:", best_params)
+
+# 结束计时
+end_time = time.time()
+# 计算时间差
+execution_time = end_time - start_time
+# 打印执行时间
+print("代码执行时间：", execution_time, "秒")
